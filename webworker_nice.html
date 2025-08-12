@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Worker Pi Calculator</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        margin: 0;
+        background-color: #f0f2f5;
+        flex-direction: column;
+        color: #333;
+      }
+      .container {
+        background-color: #fff;
+        padding: 2em;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        text-align: center;
+        max-width: 800px;
+        width: 90%;
+      }
+      h1 {
+        color: #007bff;
+      }
+      #loading-indicator {
+        margin-top: 1em;
+        font-size: 1.2em;
+        font-weight: 600;
+        color: #666;
+        transition: color 0.3s ease;
+      }
+      #pi-result {
+        margin-top: 1em;
+        font-size: 1.5em;
+        font-weight: 700;
+        color: #28a745;
+        word-wrap: break-word;
+      }
+    </style>
+    <script src="workersFriend.js"></script>
+</head>
+<body>
+
+    <div class="container">
+      <h1>Web Worker Pi Calculator</h1>
+      <p>The main thread is free. The worker is calculating Pi using a CPU-intensive algorithm.</p>
+      <div id="loading-indicator">Waiting for work...</div>
+      <div id="pi-result"></div>
+    </div>
+
+    <script id="worker-script" type="text/javascript">
+      // A simple Leibniz formula for calculating Pi (CPU-intensive)
+      const calculatePi = (iterations, onProgress) => {
+        let pi = 0;
+        const totalIterations = iterations;
+        const progressInterval = Math.max(1, Math.floor(totalIterations / 100));
+
+        for (let i = 0; i < totalIterations; i++) {
+          pi += 4 * Math.pow(-1, i) / (2 * i + 1);
+          if (i % progressInterval === 0 && i > 0) {
+            onProgress({
+              percentage: i / totalIterations,
+              piValue: pi
+            });
+          }
+        }
+        return pi;
+      };
+
+      self.onmessage = ({ data }) => {
+        const { id, type, payload } = data;
+        try {
+          if (type === 'calculate_pi') {
+            const { iterations } = payload;
+            
+            console.log('Worker is starting Pi calculation with', iterations, 'iterations...');
+            
+            const onProgress = ({ percentage, piValue }) => {
+              self.postMessage({ 
+                id, 
+                type: 'progress', 
+                message: `Calculating... ${Math.round(percentage * 100)}% complete`,
+                payload: { piValue }
+              });
+            };
+            
+            const result = calculatePi(iterations, onProgress);
+            
+            self.postMessage({ id, type: 'calculate_pi:result', payload: { piValue: result } });
+            console.log('Pi calculation complete.');
+          }
+        } catch (error) {
+          console.error('Worker error:', error);
+          self.postMessage({ id, type: 'error', error: error.message });
+        }
+      };
+    </script>
+    
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const piResultDisplay = document.getElementById('pi-result');
+        
+        const onProgressCallback = (message, payload) => {
+          loadingIndicator.textContent = message;
+          if (payload && payload.piValue) {
+            piResultDisplay.textContent = `Current approximation: ${payload.piValue.toFixed(10)}`;
+          }
+        };
+
+        const coreWorker = WorkersFriend.createCoreWorkerFromId('worker-script', true, onProgressCallback);
+        
+        // Use a large number of iterations to demonstrate a long-running task
+        const iterations = 100000000;
+
+        coreWorker.call('calculate_pi', { iterations })
+          .then(result => {
+            console.log('\nMain thread received final result:', result);
+            loadingIndicator.textContent = 'Calculation complete!';
+            loadingIndicator.style.color = '#28a745';
+            piResultDisplay.textContent = `Final approximation: ${result.piValue.toFixed(15)}`;
+          })
+          .catch(err => {
+            console.error('Main thread caught an error from the worker:', err);
+            loadingIndicator.textContent = 'Error during calculation!';
+            loadingIndicator.style.color = '#dc3545';
+          });
+      });
+    </script>
+</body>
+</html>
