@@ -86,6 +86,8 @@ abortController.aborted = true;
 coreWorker.terminate();
 ```
 
+Logging can be overridden per-instance via `options.logger`.
+
 ---
 
 ## Design Choices

@@ -1,6 +1,6 @@
-window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
+window.versions = { ...(window.versions||{}), workersFriend: '3.0.7' };
 /**
- * WorkersFriend.js  v3.0.5
+ * WorkersFriend.js  v3.0.7
  * ------------------------
  * Generic, reusable Web Worker helper with in‑page emulation, progress events,
  * console swizzling, and cancellable tasks via an AbortController‑style flag.
@@ -54,6 +54,15 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
 
   let nextMessageId = 0;
 
+  // 1) Default logger visible on main thread
+  var defaultLogger = {
+    log:    function(){ console.log('[worker]', ...arguments); },
+    warn:   function(){ console.warn('[worker]', ...arguments); },
+    error:  function(){ console.error('[worker]', ...arguments); },
+    info:   function(){ console.info('[worker]', ...arguments); },
+    debug:  function(){ console.debug('[worker]', ...arguments); }
+  };
+
   // 1) STRUCTURED-CLONE / deep-clone fallback
   function cloneAny(obj) {
     if (typeof structuredClone === 'function') {
@@ -62,26 +71,8 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
     return JSON.parse(JSON.stringify(obj));
   }
 
-  // 2) ROBUST console-swizzling
-  const _SWIZZLED = new WeakSet();
-  function swizzleConsole(targetConsole, sendFn) {
-    if (_SWIZZLED.has(targetConsole)) return;
-    _SWIZZLED.add(targetConsole);
-
-    for (const lvl of ['log','warn','error','info','debug']) {
-      const orig = targetConsole[lvl].bind(targetConsole);
-      targetConsole[lvl] = (...args) => {
-        try { sendFn(lvl, ...args); } catch(_) {}
-        orig(...args);
-      };
-    }
-  }
-  function unswizzleConsole(targetConsole) {
-    // no-op in this sketch, but you could restore originals if saved
-  }
-
     class MainThreadWorkerEmulator {
-    constructor(blobFn, options={}) {
+    constructor(blobFn) {
       this.terminated = false;
       this.listeners  = [];
       this.workerScope = {
@@ -100,9 +91,7 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
           }, 0);
         },
         addEventListener: (type, fn) => {
-          if (type === 'message') {
-            this.listeners.push(fn);
-          }
+          if (type === 'message') this.listeners.push(fn);
         },
         console: global.console
       };
@@ -115,9 +104,7 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
     }
 
     addEventListener(type, fn) {
-      if (type === 'message') {
-        this.listeners.push(fn);
-      }
+      if (type === 'message') this.listeners.push(fn);
     }
  
     removeEventListener(type, fn) {
@@ -169,7 +156,6 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
 
     terminate() {
       try { this._ep.terminate(); } catch(_) {}
-      unswizzleConsole(global.console);
     }
 
     _maybeRevoke() {
@@ -186,12 +172,29 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
       useWorkerThread       = true,
       enableConsoleSwizzling= true,
       onProgress            = null,
-      onSwizzledConsole     = null,
-      timeout               = 30000
+      timeout               = 30000,
+      logger: userLogger     = {}
     } = options;
+
+    const logger = Object.assign({}, defaultLogger, userLogger);
 
     // BUILD the blobFn to run inside real/emulated worker
     const blobFn = self => {
+      // ——— SWIZZLE HELPERS —————————————————————
+      const _SWIZZLED = new WeakSet();
+      function swizzleConsole(targetConsole, sendFn) {
+        if (_SWIZZLED.has(targetConsole)) return;
+        _SWIZZLED.add(targetConsole);
+        for (const lvl of ['log','warn','error','info','debug']) {
+          const orig = targetConsole[lvl].bind(targetConsole);
+          targetConsole[lvl] = (...args) => {
+            try { sendFn(lvl, ...args); } catch (_) {}
+            orig(...args);
+          };
+        }
+      }
+      // ———————————————————————————————————————
+
       const actionHandlers = new Map();
       let task, _onProgress, _onError, _onResult;
       let controller; // will be set per‐call
@@ -296,7 +299,7 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
       blobUrl      = URL.createObjectURL(blob);
       rawWorker    = new Worker(blobUrl);
     } else {
-      rawWorker = new MainThreadWorkerEmulator(blobFn, {});
+      rawWorker = new MainThreadWorkerEmulator(blobFn);
     }
     const endpoint = new Endpoint(rawWorker, () => {
       if (blobUrl) URL.revokeObjectURL(blobUrl);
@@ -355,6 +358,7 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
     endpoint.addEventListener('message', dispatchMainMessage);
 
     // 7) PUBLIC API: call() returns { promise, abortController }
+    // ...above...
     return {
       call(actionName, params) {
         const id = String(nextMessageId++);
@@ -379,9 +383,6 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
                 ? taskObject.teardown.toString()
                 : '',
               enableConsoleSwizzling,
-              onSwizzledConsoleFn: onSwizzledConsole
-                ? onSwizzledConsole.toString()
-                : '',
               abortSignal: abortController
             }
           });
@@ -392,7 +393,7 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
 
       terminate() {
         // cancel all pending
-        for (const { reject, timeoutId, params } of pending.values()) {
+        for (const { reject, timeoutId } of pending.values()) {
           clearTimeout(timeoutId);
           reject(new Error('Worker terminated'));
         }
