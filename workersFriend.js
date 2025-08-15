@@ -1,4 +1,53 @@
 window.versions = { ...(window.versions||{}), workersFriend: '3.0.5' };
+/**
+ * WorkersFriend.js  v3.0.5
+ * ------------------------
+ * Generic, reusable Web Worker helper with in‑page emulation, progress events,
+ * console swizzling, and cancellable tasks via an AbortController‑style flag.
+ *
+ * USAGE EXAMPLE:
+ *
+ * // 1. Define your worker "task" object with setup / loop / teardown functions:
+ * const task = {
+ *   setup:    ({ iterations }) => ({ i: 0, totalIterations: iterations }),
+ *   loop:     (state, progress) => {
+ *               // do a chunk of work
+ *               if (state.i % 1000 === 0) progress(`At iteration ${state.i}`);
+ *             },
+ *   teardown: state => ({ finishedAt: Date.now(), iterationsDone: state.i })
+ * };
+ *
+ * // 2. Create a worker instance (real thread or in‑page emulator):
+ * const coreWorker = WorkersFriend.createCoreWorker(task, {
+ *   useWorkerThread: true,                // false => runs in‑page for debugging
+ *   enableConsoleSwizzling: true,         // capture worker console.* calls
+ *   onProgress: msg => updateProgressBar(msg),
+ *   onSwizzledConsole: (lvl, ...args) => logToPanel(lvl, ...args),
+ *   timeout: 30000                         // ms before auto‑reject
+ * });
+ *
+ * // 3. Call the worker:
+ * const { promise, abortController } = coreWorker.call('start_task', {
+ *   iterations: 1_000_000,
+ *   isEmulated: false
+ * });
+ *
+ * promise
+ *   .then(result => console.log('Worker result:', result))
+ *   .catch(err => console.error('Worker error/timeout:', err));
+ *
+ * // 4. Cancel if needed:
+ * abortController.aborted = true;
+ *
+ * // 5. Clean up when done:
+ * coreWorker.terminate();
+ *
+ * NOTES:
+ * - All messages are deep‑cloned via structuredClone (with JSON fallback)
+ * - Progress callbacks are optional; post from worker as { action:'progress', message }
+ * - MainThreadWorkerEmulator simulates Worker API for single‑thread debugging
+ * - No global state is shared between calls; pass all config in task/setup payloads
+ */
 
 (function(global) {
   'use strict';
