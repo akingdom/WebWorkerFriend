@@ -1,91 +1,165 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Web Worker Pi Calculator</title>
-<style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f0f2f5;flex-direction:column;color:#333}
-.container{background:#fff;padding:2em;border-radius:8px;box-shadow:0 4px 6px rgba(0,0,0,.1);text-align:center;max-width:800px;width:90%}
-h1{color:#007bff}
-.controls{margin:1em 0;display:flex;justify-content:center;align-items:center;gap:1em}
-#start-button{padding:.75em 1.5em;font-size:1em;font-weight:600;color:#fff;background:#007bff;border:none;border-radius:5px;cursor:pointer;transition:background .3s}
-#start-button:hover{background:#0056b3}
-#start-button:disabled{background:#ccc;cursor:not-allowed}
-#loading-indicator{margin-top:1em;font-size:1.2em;font-weight:600;color:#666;transition:color .3s}
-#pi-result{margin-top:1em;font-size:1.5em;font-weight:700;color:#28a745;word-wrap:break-word}
-</style>
-<script src="workersFriend.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Worker Pi Calculator</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "Helvetica Neue", Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      background: #f0f2f5;
+      flex-direction: column;
+      color: #333;
+    }
+    .container {
+      background: #fff;
+      padding: 2em;
+      border-radius: 8px;
+      box-shadow: 0 4px 6px rgba(0,0,0,.1);
+      text-align: center;
+      max-width: 800px;
+      width: 90%;
+    }
+    h1 { color: #007bff }
+    .controls {
+      margin: 1em 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 1em;
+    }
+    #start-button {
+      padding: .75em 1.5em;
+      font-size: 1em;
+      font-weight: 600;
+      color: #fff;
+      background: #007bff;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background .3s;
+    }
+    #start-button:hover { background: #0056b3 }
+    #start-button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    #loading-indicator {
+      margin-top: 1em;
+      font-size: 1.2em;
+      font-weight: 600;
+      color: #666;
+      transition: color .3s;
+    }
+    #pi-result {
+      margin-top: 1em;
+      font-size: 1.5em;
+      font-weight: 700;
+      color: #28a745;
+      word-wrap: break-word;
+    }
+  </style>
+
+  <script src="workersFriend.js"></script>
 </head>
 <body>
-<div class="container">
-<h1>Web Worker Pi Calculator</h1>
-<p>The main thread is free. The worker is calculating Pi using a CPU-intensive algorithm.</p>
-<div class="controls">
-<button id="start-button">Start Calculation</button>
-<div><input type="checkbox" id="debug-emulator-checkbox"><label for="debug-emulator-checkbox">Debug in-emulator</label></div>
-</div>
-<div id="loading-indicator">Waiting for work...</div>
-<div id="pi-result"></div>
-</div>
+  <div class="container">
+    <h1>Web Worker Pi Calculator</h1>
+    <p>The main thread is free. The worker is calculating Pi using a CPU-intensive algorithm.</p>
 
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-  const loading = document.getElementById('loading-indicator');
-  const piResult = document.getElementById('pi-result');
-  const startBtn = document.getElementById('start-button');
-  const debugCheckbox = document.getElementById('debug-emulator-checkbox');
-  let coreWorker = null;
+    <div class="controls">
+      <button id="start-button">Start Calculation</button>
+      <div>
+        <input type="checkbox" id="debug-emulator-checkbox">
+        <label for="debug-emulator-checkbox">Debug in-emulator</label>
+      </div>
+    </div>
 
-  const task = {
-    setup: payload => { console.log('Setup', payload.iterations); return { pi:0,i:0,totalIterations:payload.iterations }; },
-    loop: (state,onProgress) => { state.pi += 4*Math.pow(-1,state.i)/(2*state.i+1); if(state.i % Math.max(1,Math.floor(state.totalIterations/100))===0) onProgress(`Calculating... ${Math.round(state.i/state.totalIterations*100)}%`); },
-    teardown: state => { console.log('Teardown complete'); return { piValue: state.pi }; }
-  };
+    <div id="loading-indicator">Waiting for work...</div>
+    <div id="pi-result"></div>
+  </div>
 
-  const onProgress = msg => loading.textContent = msg;
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const loading       = document.getElementById('loading-indicator');
+      const piResult      = document.getElementById('pi-result');
+      const startBtn      = document.getElementById('start-button');
+      const debugCheckbox = document.getElementById('debug-emulator-checkbox');
+      let coreWorker      = null;
 
-startBtn.addEventListener('click', () => {
-  if (coreWorker) coreWorker.terminate();
+      // Define your Pi‐calculation task
+      const task = {
+        setup: ({ iterations }) => {
+          console.log('Setup', iterations);
+          return { pi: 0, i: 0, totalIterations: iterations };
+        },
+        loop: (state, onProgress) => {
+          // Only compute the term—don't advance i here!
+          state.pi += 4 * Math.pow(-1, state.i) / (2 * state.i + 1);
+          if (state.i % Math.max(1, Math.floor(state.totalIterations / 100)) === 0) {
+            onProgress(`Calculating... ${Math.round(state.i / state.totalIterations * 100)}%`);
+          }
+          // note: i will be incremented by the orchestrator
+        },
+        teardown: state => {
+          console.log('Teardown complete');
+          return { piValue: state.pi };
+        }
+      };
 
-  const useWorker = !debugCheckbox.checked;
-  coreWorker = WorkersFriend.createCoreWorker(task, {
-    useWorkerThread: useWorker,
-    onProgress,
-    timeout: 60000
-  });
+      const onProgress = msg => {
+        loading.textContent = msg;
+      };
 
-  const iterations = 1_000_000; // reduce for demo
+      startBtn.addEventListener('click', () => {
+        // kill any prior worker
+        if (coreWorker) coreWorker.terminate();
 
-  startBtn.disabled = true;
-  loading.textContent = 'Calculation started...';
-  loading.style.color = '#666';
-  piResult.textContent = '';
+        // decide real vs. emulated
+        const useWorker = !debugCheckbox.checked;
+        coreWorker = WorkersFriend.createCoreWorker(task, {
+          useWorkerThread: useWorker,
+          onProgress,
+          timeout: 60000
+        });
 
-  // Destructure the promise out of call()
-  const { promise, abortController } = coreWorker.call(
-    'start_task',
-    { iterations, isEmulated: !useWorker }
-  );
+        const iterations = 500_000; // adjust as you like
 
-  promise
-    .then(res => {
-      loading.textContent = 'Calculation complete!';
-      loading.style.color = '#28a745';
-      piResult.textContent = `Final approximation: ${res.piValue.toFixed(15)}`;
-      startBtn.disabled = false;
-    })
-    .catch(err => {
-      loading.textContent = 'Error during calculation!';
-      loading.style.color = '#dc3545';
-      console.error(err);
-      startBtn.disabled = false;
+        startBtn.disabled      = true;
+        loading.textContent    = 'Calculation started...';
+        loading.style.color    = '#666';
+        piResult.textContent   = '';
+
+        // Pass the built-in “start_task” method + isEmulated flag
+        const { promise, abortController } = coreWorker.call(
+          'start_task',
+          { iterations, isEmulated: !useWorker }
+        );
+
+        promise
+          .then(res => {
+            loading.textContent  = 'Calculation complete!';
+            loading.style.color  = '#28a745';
+            piResult.textContent = `Final approximation: ${res.piValue.toFixed(15)}`;
+          })
+          .catch(err => {
+            loading.textContent = 'Error during calculation!';
+            loading.style.color = '#dc3545';
+            console.error(err);
+          })
+          .finally(() => {
+            startBtn.disabled = false;
+          });
+
+        // to cancel mid-flight: abortController.abort();
+      });
     });
-
-    // Optional: expose abortController if you ever want to cancel mid-flight
-    // window.currentAbort = abortController;
-  });
-});
-</script>
+  </script>
 </body>
 </html>

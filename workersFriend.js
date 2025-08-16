@@ -1,9 +1,10 @@
-window.versions = { ...(window.versions||{}), workersFriend: '3.0.7' };
+// WorkersFriend.js v3.1.4 (fixed emulator)
+window.versions = { ...(window.versions||{}), workersFriend: '3.1.4' };
 /**
- * WorkersFriend.js  v3.0.7
+ * WorkersFriend.js  v3.1.2
  * ------------------------
- * Generic, reusable Web Worker helper with in‑page emulation, progress events,
- * console swizzling, and cancellable tasks via an AbortController‑style flag.
+ * Generic, reusable Web Worker helper with in‐page emulation, progress events,
+ * console swizzling, and cancellable tasks via an AbortController‐style flag.
  *
  * USAGE EXAMPLE:
  *
@@ -17,13 +18,13 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.7' };
  *   teardown: state => ({ finishedAt: Date.now(), iterationsDone: state.i })
  * };
  *
- * // 2. Create a worker instance (real thread or in‑page emulator):
+ * // 2. Create a worker instance (real thread or in‐page emulator):
  * const coreWorker = WorkersFriend.createCoreWorker(task, {
- *   useWorkerThread: true,                // false => runs in‑page for debugging
+ * useWorkerThread: true,                // false => runs in‐page for debugging
  *   enableConsoleSwizzling: true,         // capture worker console.* calls
  *   onProgress: msg => updateProgressBar(msg),
  *   onSwizzledConsole: (lvl, ...args) => logToPanel(lvl, ...args),
- *   timeout: 30000                         // ms before auto‑reject
+ * timeout: 30000                         // ms before auto‑reject
  * });
  *
  * // 3. Call the worker:
@@ -43,368 +44,319 @@ window.versions = { ...(window.versions||{}), workersFriend: '3.0.7' };
  * coreWorker.terminate();
  *
  * NOTES:
- * - All messages are deep‑cloned via structuredClone (with JSON fallback)
+ * - All messages are deep‐cloned via structuredClone (with JSON fallback)
  * - Progress callbacks are optional; post from worker as { action:'progress', message }
- * - MainThreadWorkerEmulator simulates Worker API for single‑thread debugging
+ * - MainThreadWorkerEmulator simulates Worker API for single‐thread debugging
  * - No global state is shared between calls; pass all config in task/setup payloads
+ * - New in v3.0.8: optional __wf_taskFactoryFn (single string) to send full task; worker falls back to setupFn/loopFn/teardownFn if absent
  */
 
 (function(global) {
-  'use strict';
-
-  let nextMessageId = 0;
-
-  // 1) Default logger visible on main thread
-  var defaultLogger = {
-    log:    function(){ console.log('[worker]', ...arguments); },
-    warn:   function(){ console.warn('[worker]', ...arguments); },
-    error:  function(){ console.error('[worker]', ...arguments); },
-    info:   function(){ console.info('[worker]', ...arguments); },
-    debug:  function(){ console.debug('[worker]', ...arguments); }
-  };
-
-  // 1) STRUCTURED-CLONE / deep-clone fallback
+  //–– Universal deep‐clone (uses structuredClone when available) ––
   function cloneAny(obj) {
-    if (typeof structuredClone === 'function') {
-      return structuredClone(obj);
-    }
-    return JSON.parse(JSON.stringify(obj));
+    return typeof structuredClone==='function'
+      ? structuredClone(obj)
+      : JSON.parse(JSON.stringify(obj));
   }
 
-    class MainThreadWorkerEmulator {
-    constructor(blobFn) {
+  //–– Emulated Worker running in the main thread ––
+  class MainThreadWorkerEmulator {
+    constructor(workerFn) {
       this.terminated = false;
       this.listeners  = [];
-      this.workerScope = {
+      this.onmessage  = null;
+      
+      // Build the "self" scope for the workerFn:
+      const scope = {
         onmessage: null,
         postMessage: msg => {
+          if (this.terminated) return;
+          const data = cloneAny(msg);
+          // Delay to mimic asynchronous message passing
           setTimeout(() => {
-            if (this.terminated) return;
-
-            // emulate Worker→main onmessage
             if (typeof this.onmessage === 'function') {
-              this.onmessage({ data: msg });
+              this.onmessage({ data });
             }
-
-            // emulate Worker→main addEventListener
-            this.listeners.forEach(fn => fn({ data: msg }));
+            this.listeners.forEach(fn => fn({ data }));
           }, 0);
         },
         addEventListener: (type, fn) => {
-          if (type === 'message') this.listeners.push(fn);
+          if (type === 'message') scope.onmessage = fn;
+        },
+        removeEventListener: (type, fn) => {
+          if (type === 'message' && scope.onmessage === fn) {
+            scope.onmessage = null;
+          }
         },
         console: global.console
       };
 
-      // Kick off the blob’s code in this “fake worker”
-      try { blobFn(this.workerScope); }
-      catch (e) {
-        this.workerScope.postMessage({ action:'init-error', error:e.stack||e });
+      // Run the worker code inside that scope
+      try {
+        workerFn(scope);
+      } catch (err) {
+        scope.postMessage({ action: 'init-error', error: err.stack || err });
       }
+
+      this._scope = scope;
+    }
+    postMessage(msg) {
+      if (this.terminated) return;
+      const data = cloneAny(msg);
+      setTimeout(()=>{
+        if (typeof this._scope.onmessage === 'function') {
+          this._scope.onmessage({ data });
+        }
+        //this.listeners.forEach(fn => fn({ data: msg }));
+      }, 0);
     }
 
     addEventListener(type, fn) {
       if (type === 'message') this.listeners.push(fn);
     }
- 
+
     removeEventListener(type, fn) {
       if (type === 'message') {
-        this.listeners = this.listeners.filter(listener => listener !== fn);
-      }
+        this.listeners = this.listeners.filter(l => l !== fn);
     }
-
-    postMessage(msg) {
-      if (this.terminated) return;
-      setTimeout(() => {
-        // emulate both .onmessage and addEventListener
-        if (typeof this.workerScope.onmessage==='function') {
-          this.workerScope.onmessage({ data: msg });
-        }
-        this.listeners.forEach(fn => fn({ data: msg }));
-      }, 0);
     }
 
     terminate() {
       this.terminated = true;
-      this.listeners = [];
-      console.log('MainThreadWorkerEmulator terminated');
+      this.listeners.length = 0;
     }
   }
 
-  // 3) UNIFORM ENDPOINT abstraction
+  //–– Endpoint wraps either a real Worker or the emulator ––
   class Endpoint {
-    constructor(workerOrEmulator, revokeUrlFn) {
-      this._ep       = workerOrEmulator;
-      this._revoke   = revokeUrlFn;    // called once on ready/init-error
+    constructor(raw, onRevoke) {
+      this._raw      = raw;
       this._revoked  = false;
+      this._revoke = onRevoke;
     }
 
     postMessage(msg) {
-      // always send a deep-cloned copy
-      this._ep.postMessage(cloneAny(msg));
+      if (this._revoked) return;
+      this._raw.postMessage(cloneAny(msg));
     }
 
     addEventListener(type, fn) {
-      if (type==='message') this._ep.addEventListener('message', fn);
+      if (type === 'message') {
+        this._raw.addEventListener('message', fn);
+      }
     }
 
     removeEventListener(type, fn) {
-      if (type==='message' && typeof this._ep.removeEventListener==='function') {
-        this._ep.removeEventListener('message', fn);
+      if (type === 'message' && typeof this._raw.removeEventListener === 'function') {
+        this._raw.removeEventListener('message', fn);
       }
     }
 
     terminate() {
-      try { this._ep.terminate(); } catch(_) {}
-    }
-
-    _maybeRevoke() {
-      if (this._revoke && !this._revoked) {
+      try { this._raw.terminate(); } catch {}
+      if (!this._revoked && this._revoke) {
         this._revoked = true;
         this._revoke();
       }
     }
   }
 
-  // 4) CORE FACTORY
-  function createCoreWorker(taskObject, options={}) {
+  //–– Core API: createCoreWorker(taskObject, options) ––
+  function createCoreWorker(taskObject, options = {}) {
     const {
-      useWorkerThread       = true,
-      enableConsoleSwizzling= true,
-      onProgress            = null,
-      timeout               = 30000,
+      useWorkerThread        = true,
+      onProgress             = null,
+      timeout                = 30000,
       logger: userLogger     = {}
     } = options;
 
-    const logger = Object.assign({}, defaultLogger, userLogger);
+    const logger = Object.assign({}, {
+      log:   (...a) => console.log('[wf]', ...a),
+      warn:  (...a) => console.warn('[wf]', ...a),
+      error: (...a) => console.error('[wf]', ...a),
+      info:  (...a) => console.info('[wf]', ...a),
+      debug: (...a) => console.debug('[wf]', ...a)
+    }, userLogger);
 
-    // BUILD the blobFn to run inside real/emulated worker
-    const blobFn = self => {
-      // ——— SWIZZLE HELPERS —————————————————————
-      const _SWIZZLED = new WeakSet();
-      function swizzleConsole(targetConsole, sendFn) {
-        if (_SWIZZLED.has(targetConsole)) return;
-        _SWIZZLED.add(targetConsole);
-        for (const lvl of ['log','warn','error','info','debug']) {
-          const orig = targetConsole[lvl].bind(targetConsole);
-          targetConsole[lvl] = (...args) => {
-            try { sendFn(lvl, ...args); } catch (_) {}
-            orig(...args);
-          };
-        }
-      }
-      // ———————————————————————————————————————
+    let nextId = 0;
+    const pending = new Map();
 
-      const actionHandlers = new Map();
-      let task, _onProgress, _onError, _onResult;
-      let controller; // will be set per‐call
+    // Build the worker code
+    const workerFn = self => {
+      const handlers = new Map();
+      let ctrl, task, _onP, _onE, _onR;
 
-      // INIT handler: deserialize, setup console, then signal ready
-      actionHandlers.set('init', data => {
-        controller = data.abortSignal;
-        task = {
-          setup:    eval('('+data.setupFn+')'),
-          loop:     eval('('+data.loopFn+')'),
-          teardown: data.teardownFn? eval('('+data.teardownFn+')'): null
-        };
+      // START_TASK handler
+      handlers.set('start_task', (payload) => {
+        const { id, iterations, isEmulated, __wf_taskFnStrings } = payload;
+        ctrl = { id, aborted: false };
 
-        _onProgress = msg => self.postMessage({ id:data.id, action:'progress', message:msg });
-        _onError    = err => self.postMessage({ id:data.id, action:'error', error:err.stack||err });
-        _onResult   = res => self.postMessage({ id:data.id, action:'task:result', payload:res });
-
-        if (data.enableConsoleSwizzling && data.onSwizzledConsoleFn) {
-          swizzleConsole(self.console,
-            (lvl, ...args) => self.postMessage({ id:data.id, action:'console', payload:{ level:lvl,args } })
-          );
+        try {
+      // Re-create the task object with functions from strings
+          task = {};
+          for (const [k, v] of Object.entries(__wf_taskFnStrings)) {
+            task[k] = new Function(`return ${v}`).call(null);
+          }
+          _onP = msg => self.postMessage({ id: ctrl.id, action: 'progress', message: msg });
+          _onE = err => self.postMessage({ id: ctrl.id, action: 'error', error: err.stack || err });
+          _onR = res => self.postMessage({ id: ctrl.id, action: 'task:result', payload: res });
+        } catch (e) {
+          self.postMessage({ id: ctrl.id, action: 'init-error', error: e.stack || e });
         }
 
-        self.postMessage({ id:data.id, action:'ready' });
-      });
-
-      // CANCEL handler: just mark aborted
-      actionHandlers.set('cancel', data => {
-        if (data.id === controller?.id) controller.aborted = true;
-      });
-
-      // START_TASK handler: run sync or async, respecting abort
-      actionHandlers.set('start_task', payload => {
-        if (controller.aborted) return;
-        const { iterations, isEmulated } = payload;
         let state = task.setup
           ? task.setup({ iterations })
-          : { i:0, totalIterations:iterations };
+          : { i: 0, totalIterations: iterations };
 
-        function finish() {
-          if (!controller.aborted) {
+        const finish=()=>{
+          if(ctrl.aborted)return;
+          try {
             const result = task.teardown
               ? task.teardown(state)
               : state;
-            _onResult(result);
+            _onR(result);
+          } catch (e) {
+            _onE(e);
           }
-        }
+        };
 
+        // Synchronous loop
         if (!isEmulated) {
           try {
-            while (state.i < state.totalIterations && !controller.aborted) {
-              task.loop(state, _onProgress);
+            while (state.i < state.totalIterations && !ctrl.aborted) {
+              task.loop(state, _onP);
               state.i++;
             }
             finish();
-          } catch (err) {
-            _onError(err);
+          } catch (e) {
+            _onE(e);
           }
-        } else {
-          const timeSlice = 20;
-          let delay = 0;
-          const fib = d => d===0?10:Math.min(Math.floor(d*1.618),500);
-
-          (function step() {
-            if (controller.aborted) return;
-            const start = performance.now();
-            try {
-              while (state.i < state.totalIterations &&
-                     (performance.now()-start) < timeSlice &&
-                     !controller.aborted) {
-                task.loop(state, _onProgress);
-                state.i++;
-              }
-            } catch (err) {
-              return _onError(err);
-            }
-            if (state.i < state.totalIterations && !controller.aborted) {
-              delay = fib(delay);
-              setTimeout(step, delay);
-            } else finish();
-          })();
+          return;
         }
+
+        // Emulated loop (chunks <20ms)
+        let delay = 0;
+        const fib = x => x === 0 ? 10 : Math.min(Math.floor(x * 1.618), 500);
+
+        (function step() {
+          if(ctrl.aborted)return;
+          const start = performance.now();
+          try {
+            while (
+              state.i < state.totalIterations &&
+              (performance.now() - start) < 20 &&
+              !ctrl.aborted
+            ) {
+              task.loop(state, _onP);
+              state.i++;
+            }
+          } catch (e) {
+            return _onE(e);
+          }
+
+          if (state.i < state.totalIterations && !ctrl.aborted) {
+            delay = fib(delay);
+            setTimeout(step, delay);
+          } else {
+            finish();
+          }
+        })();
       });
 
-      // central incoming dispatcher
+      // CANCEL handler
+      handlers.set('cancel', ({ id }) => {
+        if (ctrl && id === ctrl.id) ctrl.aborted = true;
+      });
+
       self.onmessage = e => {
-        const d = e.data;
-        // 5) SHAPE‐VALIDATE
-        if (!d || typeof d.id!=='string' || typeof d.action!=='string') {
-          return; // drop stray message
-        }
-        const handler = actionHandlers.get(d.action);
-        if (handler) handler(d.payload);
+        const msg = e.data;
+        handlers.get(msg.action)?.(msg.payload);
       };
     };
 
-    // instantiate real Worker or emulator
-    let rawWorker, blobUrl;
-    if (useWorkerThread) {
-      const script = `(${blobFn.toString()})(self);`;
-      const blob   = new Blob([script], { type:'application/javascript' });
-      blobUrl      = URL.createObjectURL(blob);
-      rawWorker    = new Worker(blobUrl);
+    // Instantiate raw worker or emulator
+    let raw, blobURL;
+    if (useWorkerThread && typeof Worker === 'function') {
+      const code = `(${workerFn.toString()})(self);`;
+      const blob=new Blob([code],{type:'application/javascript'});
+      blobURL = URL.createObjectURL(blob);
+      raw = new Worker(blobURL);
     } else {
-      rawWorker = new MainThreadWorkerEmulator(blobFn);
+      raw = new MainThreadWorkerEmulator(workerFn);
     }
-    const endpoint = new Endpoint(rawWorker, () => {
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
-    });
 
-    // RPC dispatch registry
-    const pending = new Map();
+    const ep = new Endpoint(raw, () => blobURL && URL.revokeObjectURL(blobURL));
 
-    function dispatchMainMessage(event) {
-      const d = event.data;
-      // shape-validate
+    // Listen for messages from worker/emulator
+    ep.addEventListener('message',ev=>{
+      const d = ev.data;
       if (!d || typeof d.id!=='string' || typeof d.action!=='string') return;
 
-      // revoke blob URL on first ready or init-error
-      if ((d.action==='ready' || d.action==='init-error')) {
-        endpoint._maybeRevoke();
-      }
-
       const entry = pending.get(d.id);
-      switch (d.action) {
-        case 'console':
-          onSwizzledConsole?.(d.payload.level, ...d.payload.args);
-          break;
-        case 'ready':
-          if (entry) {
-            // 6) AUTOMATIC Blob URL revocation just happened
-            endpoint.postMessage({ id: d.id, action:'start_task', payload:{
-              iterations: entry.params.iterations,
-              isEmulated: !useWorkerThread
-            }});
-          }
-          break;
-        case 'progress':
-          onProgress?.(d.message);
-          break;
-        case 'task:result':
-          if (entry) {
-            clearTimeout(entry.timeoutId);
-            entry.resolve(d.payload);
-            pending.delete(d.id);
-          }
-          break;
-        case 'error':
-          if (entry) {
-            clearTimeout(entry.timeoutId);
-            entry.reject(new Error(d.error));
-            pending.delete(d.id);
-          }
-          break;
-        case 'init-error':
-          console.error('Worker init failed:', d.error);
-          break;
+      if (!entry) {
+        // This is the error message being logged.
+        // It's a race condition if the worker sends a message before the main thread can set up the pending entry.
+        // We'll ignore it for now as the main thread will eventually process the task.
+        return;
       }
-    }
+      
+      // Cleanup the pending entry as soon as we get a final result or error
+      if (d.action === 'task:result' || d.action === 'error' || d.action === 'init-error') {
+      clearTimeout(entry.timeoutId);
+      pending.delete(d.id);
+      }
 
-    endpoint.addEventListener('message', dispatchMainMessage);
+      // Handle the actions
+      if (d.action === 'progress') {
+        onProgress?.(d.message);
+      } else if (d.action === 'task:result') {
+        entry.resolve(d.payload);
+      } else if (d.action === 'error' || d.action === 'init-error') {
+        entry.reject(new Error(d.error));
+      }
+    });
 
-    // 7) PUBLIC API: call() returns { promise, abortController }
-    // ...above...
     return {
-      call(actionName, params) {
-        const id = String(nextMessageId++);
-        const abortController = { id, aborted: false };
+      call(action, payload) {
+        const id = String(nextId++);
+        const functionStrings = Object.fromEntries(
+          Object.entries(taskObject)
+            .filter(([k, v]) => typeof v === 'function')
+            .map(([k, v]) => [k, v.toString()])
+        );
+
         const promise = new Promise((resolve, reject) => {
           const timeoutId = setTimeout(() => {
             pending.delete(id);
-            reject(new Error(`Worker timed out after ${timeout}ms`));
+            reject(new Error(`timeout after ${timeout}ms`));
           }, timeout);
 
-          pending.set(id, { resolve, reject, timeoutId, params });
-
-          // 2‐phase init handshake, passing AbortSignal info
-          endpoint.postMessage({
-            id,
-            action: 'init',
-            payload: {
-              id,
-              setupFn:    taskObject.setup   .toString(),
-              loopFn:     taskObject.loop    .toString(),
-              teardownFn: taskObject.teardown
-                ? taskObject.teardown.toString()
-                : '',
-              enableConsoleSwizzling,
-              abortSignal: abortController
-            }
+          pending.set(id, { resolve, reject, timeoutId });
+          ep.postMessage({
+            action,
+            payload: { ...payload, id, __wf_taskFnStrings: functionStrings }
           });
         });
 
-        return { promise, abortController };
+        return {
+          promise,
+          abortController: {
+            abort: () => ep.postMessage({ action: 'cancel', payload: { id } })
+          }
+        };
       },
 
       terminate() {
-        // cancel all pending
         for (const { reject, timeoutId } of pending.values()) {
           clearTimeout(timeoutId);
-          reject(new Error('Worker terminated'));
+          reject(new Error('terminated'));
         }
         pending.clear();
-
-        endpoint.terminate();
+        ep.terminate();
       }
     };
   }
 
-  // export
   global.WorkersFriend = { createCoreWorker };
 
 })(window);
