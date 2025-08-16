@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Worker Pi Calculator</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "Helvetica Neue", Arial, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      background: #f0f2f5;
+      flex-direction: column;
+      color: #333;
+    }
+    .container {
+      background: #fff;
+      padding: 2em;
+      border-radius: 8px;
+      box-shadow: 0 4px 6px rgba(0,0,0,.1);
+      text-align: center;
+      max-width: 800px;
+      width: 90%;
+    }
+    h1 { color: #007bff }
+    .controls {
+      margin: 1em 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 1em;
+    }
+    #start-button {
+      padding: .75em 1.5em;
+      font-size: 1em;
+      font-weight: 600;
+      color: #fff;
+      background: #007bff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    #start-button:hover:not(:disabled) {
+      background: #0056b3;
+    }
+    #start-button:disabled {
+      background: #aaa;
+      cursor: not-allowed;
+    }
+    #pi-result {
+      margin-top: 1em;
+      font-size: 1.5em;
+      font-weight: bold;
+    }
+    #loading-indicator {
+      margin-top: 1em;
+      font-style: italic;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Pi Calculation with Web Workers</h1>
+    <p>A simple demonstration of offloading a long-running calculation to a Web Worker to prevent UI freezes.</p>
+    <div class="controls">
+      <button id="start-button">Start Calculation</button>
+      <label>
+        <input type="checkbox" id="debug-emulator-checkbox">
+        Use in-page emulator
+      </label>
+    </div>
+    <div id="loading-indicator">Click "Start Calculation" to begin.</div>
+    <div id="pi-result"></div>
+  </div>
+
+  <script src="workersFriend.js"></script>
+  <script src="workersFriend.worker.js"></script>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const loading = document.getElementById('loading-indicator');
+      const piResult = document.getElementById('pi-result');
+      const startBtn = document.getElementById('start-button');
+      const debugCheckbox = document.getElementById('debug-emulator-checkbox');
+      let piWorker = null;
+
+      const piTask = {
+        setup: ({ iterations }) => ({ i: 0, totalIterations: iterations, pi: 0 }),
+        // The loop is now handled by the worker itself, so no need for a loop function here.
+        teardown: state => ({ piValue: state.pi })
+      };
+
+      const onProgress = msg => {
+        loading.textContent = msg;
+      };
+
+      startBtn.addEventListener('click', () => {
+        if (piWorker) piWorker.terminate();
+        const useWorker = !debugCheckbox.checked;
+
+        piWorker = WorkersFriend.createLoopWorker(piTask, {
+          workerUrl: 'workersFriend.worker.js',
+          useWorkerThread: useWorker,
+          onProgress,
+          timeout: 60000
+        });
+
+        const iterations = 500_000;
+
+        startBtn.disabled = true;
+        loading.textContent = 'Calculation started...';
+        loading.style.color = '#666';
+        piResult.textContent = '';
+
+        piWorker.call({ iterations, isEmulated: !useWorker })
+          .promise
+          .then(res => {
+            loading.textContent = 'Calculation complete!';
+            loading.style.color = '#28a745';
+            piResult.textContent = `Final approximation: ${res.piValue.toFixed(15)}`;
+          })
+          .catch(err => {
+            loading.textContent = 'Error during calculation!';
+            loading.style.color = '#dc3545';
+            console.error(err);
+          })
+          .finally(() => {
+            startBtn.disabled = false;
+          });
+      });
+    });
+  </script>
+</body>
+</html>
