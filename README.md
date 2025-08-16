@@ -1,7 +1,3 @@
-Here is the `README.md` file for the `workersFriend` library, designed to serve both student and professional audiences.
-
------
-
 # WorkersFriend
 
 A Web Worker utility library with a dual-API for effortless background task execution.
