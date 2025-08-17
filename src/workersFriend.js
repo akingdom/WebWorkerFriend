@@ -1,5 +1,5 @@
-// WorkersFriend.js v6.7.3 (Final Bug Fixes)
-window.versions = { ...(window.versions || {}), workersFriend: '6.7.3' };
+// WorkersFriend.js v6.8.2 (JSDoc with @example Blocks Added)
+window.versions = { ...(window.versions || {}), workersFriend: '6.8.2' };
 
 (function(global) {
   "use strict";
@@ -72,21 +72,16 @@ window.versions = { ...(window.versions || {}), workersFriend: '6.7.3' };
         },
         console: global.console,
         importScripts: (url) => {
-          // This is a dummy for compliance. Real script is passed directly.
           if (global.__workersFriendTasks && global.__workersFriendTasks[url]) {
             global.__workersFriendTasks[url](scope);
           } else {
-            console.error(`Emulator failed to load script: ${url}. The MainThreadWorkerEmulator no longer uses importScripts. This is a fatal error.`);
-            throw new Error(`Emulator failed to load script: ${url}. The MainThreadWorkerEmulator no longer uses importScripts.`);
+            console.error(`Emulator failed to load script: ${url}. This is a fatal error.`);
+            throw new Error(`Emulator failed to load script: ${url}.`);
           }
         }
       };
-      
+
       try {
-        // The fix: We use a new Function to run the script in the emulator's scope.
-        // This is necessary because importScripts is not available in the main thread.
-        // A direct eval() would not create a separate scope.
-        // The script is now passed directly, bypassing the Blob URL issue entirely.
         const workerFn = new Function('self', workerScriptText);
         workerFn(scope);
       } catch (err) {
@@ -116,18 +111,11 @@ window.versions = { ...(window.versions || {}), workersFriend: '6.7.3' };
       this.terminated = true;
       this.listeners.length = 0;
       if (typeof this._workerOnMessageHandler === 'function') {
-          this._scope.removeEventListener('message', this._workerOnMessageHandler);
+        this._scope.removeEventListener('message', this._workerOnMessageHandler);
       }
     }
   }
 
-  /**
-   * Loads the content of a worker script for the emulator.
-   * This function allows the emulator to work with external worker files.
-   * @param {string} url The URL of the script to fetch.
-   * @returns {Promise<string>} A promise that resolves with the script's content.
-   * @ignore
-   */
   async function loadScriptForEmulator(url) {
     try {
       const response = await fetch(url);
@@ -141,19 +129,6 @@ window.versions = { ...(window.versions || {}), workersFriend: '6.7.3' };
     }
   }
 
-  /**
-   * The core factory function for creating a worker instance.
-   * @param {object} options - The worker configuration options.
-   * @param {boolean} [options.useWorkerThread=true] - If true, a real Web Worker is used. Otherwise, an in-page emulator is used.
-   * @param {Function} [options.onLiveProgress] - A callback for real-time progress updates.
-   * @param {Function} [options.onDeferredProgress] - A callback for batched progress updates.
-   * @param {number} [options.timeout=30000] - The maximum time to wait for a result before timing out.
-   * @param {string} [options.workerUrl] - The URL to the worker script file.
-   * @param {string} [options.taskString] - The worker's code as a string (for convenience).
-   * @param {string} [options.taskElementId] - The ID of a <script> element containing the worker's code.
-   * @returns {Promise<object>} A promise that resolves with the worker control object, including `call` and `terminate` methods.
-   * @private
-   */
   function createCoreWorker(options = {}) {
     const {
       useWorkerThread = true,
@@ -204,13 +179,10 @@ window.versions = { ...(window.versions || {}), workersFriend: '6.7.3' };
             actualWorkerUrl = workerUrl;
           }
         }
-        
+
         if (useWorkerThread && typeof Worker === 'function') {
           raw = new Worker(actualWorkerUrl);
         } else if (!raw) {
-          // This branch is now only for when a taskString/taskElementId was not specified
-          // and a workerUrl was used in non-thread mode, which is handled above.
-          // We can remove this else-if, but it's good to keep it for clarity.
           throw new Error("Logic error: Could not create worker instance.");
         }
       } catch (err) {
@@ -229,11 +201,11 @@ window.versions = { ...(window.versions || {}), workersFriend: '6.7.3' };
         terminate: () => {
           rawTerminated = true;
           for (const { reject, timeoutId } of pending.values()) {
-              clearTimeout(timeoutId);
-              reject(new Error("Worker terminated."));
+            clearTimeout(timeoutId);
+            reject(new Error("Worker terminated."));
           }
           pending.clear();
-          
+
           if (raw instanceof Worker) {
             raw.terminate();
             if (taskString || taskElementId || (workerUrl && !useWorkerThread)) {
@@ -425,6 +397,50 @@ window.versions = { ...(window.versions || {}), workersFriend: '6.7.3' };
         },
         terminate: () => coreWorker.terminate(),
       };
-    }
+    },
+
+    /**
+     * Creates a loop worker from an object containing `setup`, `loop`, and `teardown` functions.
+     * This API is designed to mimic the Arduino `setup()` and `loop()` structure for students and beginners.
+     * @param {object} taskObject - An object with `setup`, `loop`, and `teardown` functions.
+     * @param {WorkerOptions} [options] - The worker configuration options.
+     * @returns {Promise<object>} A promise that resolves with the worker control object.
+     * @example
+     * // Define your task in a simple object.
+     * const piTask = {
+     * setup: ({ iterations }) => ({ i: 0, totalIterations: iterations, pi: 0 }),
+     * loop: state => {
+     * state.pi += 4 * Math.pow(-1, state.i) / (2 * state.i + 1);
+     * state.i++;
+     * return state;
+     * },
+     * teardown: state => ({ piValue: state.pi }),
+     * };
+     *
+     * const piWorker = await WorkersFriend.createLoopWorkerFromObject(piTask, {
+     * workerUrl: 'workersFriend.worker.js',
+     * useWorkerThread: true
+     * });
+     *
+     * const { promise } = piWorker.call({ iterations: 500000 });
+     * promise.then(res => console.log(res.piValue.toFixed(15)));
+     */
+    createLoopWorkerFromObject: async (taskObject, options) => {
+      const coreWorker = await createCoreWorker({ ...options, workerUrl: options.workerUrl });
+      const functionStrings = Object.fromEntries(
+        Object.entries(taskObject)
+          .filter(([k, v]) => typeof v === 'function')
+          .map(([k, v]) => [k, v.toString()])
+      );
+      return {
+        call: (payload = {}) => {
+          return coreWorker.call('start_loop_task', {
+            ...payload,
+            __wf_taskFnStrings: functionStrings,
+          });
+        },
+        terminate: () => coreWorker.terminate(),
+      };
+    },
   };
 })(window);

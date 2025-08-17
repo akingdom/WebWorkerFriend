@@ -1,36 +1,63 @@
-// workersFriend.worker.js v6.7.0
+// workersFriend.worker.js v6.8.1
 /**
  * The worker script for WorkersFriend.
  * This script is responsible for all background tasks and should be served as a separate file.
  */
 self.onmessage = e => {
   const { action, payload } = e.data;
+  let ctrl, task;
 
-  // We only handle the 'start_loop_task' action, but a custom worker
-  // could handle multiple actions.
-  if (action === 'start_loop_task') {
-    const { id, iterations } = payload;
-    let pi = 0;
-    let i = 0;
-    const totalIterations = iterations;
-    const aborted = false;
+  // This block handles the dynamic execution of setup/teardown/loop
+  if (payload && payload.__wf_taskFnStrings) {
+    ctrl = { id: payload.id, aborted: false };
+    try {
+      task = {};
+      for (const [k, v] of Object.entries(payload.__wf_taskFnStrings)) {
+        task[k] = new Function(`return ${v}`).call(null);
+      }
+    } catch(e) {
+      self.postMessage({ id: ctrl.id, action: 'init-error', error: { message: e.message, stack: e.stack, type: 'init' } });
+      return;
+    }
+  }
 
-    // Report progress to the main thread
-    const postProgress = msg => self.postMessage({ id, action: 'live:data', payload: msg });
-
-    // The core calculation loop
-    while (!aborted && i < totalIterations) {
-      pi += 4 * Math.pow(-1, i) / (2 * i + 1);
-      i++;
-      if (i % 50000 === 0) {
-        postProgress(`Working... ${i} of ${totalIterations}`);
+  if (action === 'cancel' && ctrl && payload.id === ctrl.id) {
+    ctrl.aborted = true;
+    return;
+  }
+  
+  // The start_loop_task action now uses the setup/loop/teardown functions
+  if (action === 'start_loop_task' && task && typeof task.setup === 'function' && typeof task.loop === 'function' && typeof task.teardown === 'function') {
+    const { id, ...restOfPayload } = payload;
+    let state;
+    try {
+      // Execute the 'setup' function
+      state = task.setup(restOfPayload);
+    } catch (e) {
+      self.postMessage({ id, action: 'error', error: { message: `Error in setup: ${e.message}`, stack: e.stack }});
+      return;
+    }
+    
+    // The main loop is now dynamic, calling the user-provided 'loop' function
+    while (!ctrl.aborted && state.i < state.totalIterations) {
+      state = task.loop(state);
+      if (state.i % 50000 === 0) {
+        self.postMessage({ id, action: 'live:data', payload: `Working... ${state.i} of ${state.totalIterations}` });
       }
     }
 
+    // Execute the 'teardown' function
+    let finalResult;
+    try {
+      finalResult = task.teardown(state);
+    } catch (e) {
+      self.postMessage({ id, action: 'error', error: { message: `Error in teardown: ${e.message}`, stack: e.stack }});
+      return;
+    }
+    
     // Report final result to the main thread
-    self.postMessage({ id, action: 'task:result', payload: { piValue: pi } });
+    self.postMessage({ id, action: 'task:result', payload: finalResult });
   }
 
-  // The 'cancel' action is automatically handled by the main library.
-  // It terminates the worker, so we don't need a specific handler here.
+  // The 'cancel' action is handled above.
 };

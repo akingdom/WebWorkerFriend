@@ -89,13 +89,22 @@
   </div>
 
   <script>
-    // In this updated version, your worker's logic is in a separate file.
-    // The main thread code now acts as a controller, launching the worker.
     let piWorker;
     const startBtn = document.getElementById('start-button');
     const debugCheckbox = document.getElementById('debug-mode');
     const loading = document.getElementById('loading');
     const piResult = document.getElementById('pi-result');
+
+    // The 'Arduino-style' setup/loop/teardown object for the student audience
+    const piTask = {
+      setup: ({ iterations }) => ({ i: 0, totalIterations: iterations, pi: 0 }),
+      loop: state => {
+        state.pi += 4 * Math.pow(-1, state.i) / (2 * state.i + 1);
+        state.i++;
+        return state;
+      },
+      teardown: state => ({ piValue: state.pi }),
+    };
 
     const onProgress = msg => {
       loading.textContent = msg;
@@ -105,8 +114,8 @@
       if (piWorker) piWorker.terminate();
       const useWorker = !debugCheckbox.checked;
 
-      // The new API is asynchronous and returns a Promise.
-      piWorker = await WorkersFriend.createLoopWorker('workersFriend.worker.js', {
+      piWorker = await WorkersFriend.createLoopWorkerFromObject(piTask, {
+        workerUrl: 'workersFriend.worker.js',
         useWorkerThread: useWorker,
         onLiveProgress: onProgress,
         timeout: 60000
@@ -119,7 +128,6 @@
       loading.style.color = '#666';
       piResult.textContent = '';
 
-      // The call() method now returns an object containing the promise.
       const { promise } = piWorker.call({ iterations });
 
       promise
