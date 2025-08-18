@@ -171,3 +171,10 @@ promise.then(result => {
   * **Cancellable Tasks:** Use the `abortController` to easily stop a running task, like when a user navigates away or presses a "cancel" button.
   * **Progress Events:** Get real-time updates from your worker to show progress bars or loading indicators.
   * **Production Ready:** The library is secure and compatible with modern web security policies (CSP).
+
+---
+
+### Future
+
+  * Various efficiencies and other issues need to be made to make this a truly production-ready library to the desired scope.
+
